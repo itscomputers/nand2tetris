@@ -1,14 +1,17 @@
 list project:
-  ls ./projects/{{project}} | rg hdl
-
-list_remaining project:
-  rg "Put you code here" ./projects/{{project}}/*.hdl
+  find ./projects/{{project}} \
+    | rg "([\./A-Za-z0-9]+)(hdl|asm)" -or '$1$2' \
 
 open project chip:
   vim ./projects/{{project}}/{{chip}}.hdl
 
 test project chip:
   ./tools/HardwareSimulator.sh ./projects/{{project}}/{{chip}}.tst
+
+test_all project:
+  find ./projects/{{project}} \
+    | rg "([\./A-Za-z0-9]+)(hdl|asm)" -or '$1' \
+    | xargs -I % sh -c 'echo %tst; ./tools/HardwareSimulator.sh %tst'
 
 debug project chip:
   ./tools/TextComparer.sh ./projects/{{project}}/{{chip}}.cmp ./projects/{{project}}/{{chip}}.out
