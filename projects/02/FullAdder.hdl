@@ -13,5 +13,11 @@ CHIP FullAdder {
         carry;   // Left bit of a + b + c
 
     PARTS:
-    // Put you code here:
+    Xor(a=a, b=b, out=axb);
+    Xor(a=axb, b=c, out=sum);
+    And(a=a, b=b, out=ab);
+    And(a=axb, b=c, out=axbc);
+    Or(a=ab, b=axbc, out=carry);
 }
+
+/* gate count: 5 + 5 + 2 + 2 + 3 = 17 */
