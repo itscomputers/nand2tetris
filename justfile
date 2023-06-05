@@ -1,6 +1,6 @@
 list project:
   find ./projects/{{project}} \
-    | rg "([\./A-Za-z0-9]+)(hdl|asm)" -or '$1$2' \
+    | rg "([\./A-Za-z0-9]+(hdl|asm))" -or '$1'
 
 open project chip:
   vim ./projects/{{project}}/{{chip}}.hdl
@@ -14,7 +14,9 @@ test_all project:
     | xargs -I % sh -c 'echo %tst; ./tools/HardwareSimulator.sh %tst'
 
 debug project chip:
-  ./tools/TextComparer.sh ./projects/{{project}}/{{chip}}.cmp ./projects/{{project}}/{{chip}}.out
+  ./tools/TextComparer.sh \
+    ./projects/{{project}}/{{chip}}.cmp \
+    ./projects/{{project}}/{{chip}}.out
 
 simulate:
   ./tools/HardwareSimulator.sh
