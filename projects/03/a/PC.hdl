@@ -16,22 +16,8 @@ CHIP PC {
     OUT out[16];
 
     PARTS:
-    Inc16(in=registerout, out=incval);
-    Mux16(a=registerout, b=incval, sel=inc, out=incout);
-    Mux16(a=incout, b=in, sel=load, out=loadout);
-    Mux16(a=loadout, b=false, sel=reset, out=resetout);
-    Register(in=resetout, load=true, out=registerout, out=out);
+    Inc16(in=r, out=rr);
+    Mux8Way16(a=r, b=rr, c=in, d=in, sel[2]=reset, sel[1]=load, sel[0]=inc, out=R);
+    Register(in=R, load=true, out=r, out=out);
 }
-
-/*
-  8 cases
-  0 0 0 ~> incval = r + 1, incout = r,      loadout = r,      resetout = r      ~> r
-  0 0 1 ~> incval = r + 1, incout = r + 1,  loadout = r + 1,  resetout = r + 1  ~> r + 1
-  0 1 0 ~> incval = r + 1, incout = r,      loadout = in,     resetout = in     ~> in
-  0 1 1 ~> incval = r + 1, incout = r + 1,  loadout = in,     resetout = in     ~> in
-  1 0 0 ~> incval = r + 1, incout = r,      loadout = r,      resetout = 0      ~> 0
-  1 0 1 ~> incval = r + 1, incout = r + 1,  loadout = r + 1,  resetout = 0      ~> 0
-  1 1 0 ~> incval = r + 1, incout = r,      loadout = in,     resetout = 0      ~> 0
-  1 1 1 ~> incval = r + 1, incout = r + 1,  loadout = in,     resetout = 0      ~> r
-*/
 
