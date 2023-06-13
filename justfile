@@ -21,3 +21,5 @@ debug project chip:
 simulate:
   ./tools/HardwareSimulator.sh
 
+cpu_emulate:
+  ./tools/CPUEmulator.sh
