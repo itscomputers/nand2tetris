@@ -15,7 +15,7 @@
 M=0
 
 (Loop)
-  @24576
+  @KBD
   D=M
   @SetPixel
   D;JNE
