@@ -28,8 +28,8 @@ CHIP Memory {
 
     PARTS:
     Not(in=address[14], out=yram);
-    Not(in=address[13], out=n8);
-    And(a=n8, b=address[14], out=yscr);
+    Not(in=address[13], out=n13);
+    And(a=n13, b=address[14], out=yscr);
 
     And(a=yram, b=load, out=ramload);
     And(a=yscr, b=load, out=scrload);
