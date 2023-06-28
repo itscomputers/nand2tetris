@@ -6,11 +6,19 @@ class Assembler
   end
 
   def lines
-    @lines ||= Parser.parse(@path.read)
+    @lines ||= File.read(@path).split("\n").map do |text|
+      text = text.split("//").first.strip
+      next if text.empty?
+      Line.build(text).tap do |line|
+        raise StandardError.new("#{line.text} is invalid") unless line.valid?
+      end
+    end.compact
   end
 
-  def translated_lines
-    @translated_lines ||= Translator.translate(lines, symbol_table)
+  def assembled_lines
+    @assembled_lines ||= lines
+      .reject { |line| line.is_a?(Label) }
+      .map { |line| line.binary_string(@symbol_table) }
   end
 
   def symbol_table
@@ -18,7 +26,7 @@ class Assembler
   end
 
   def output
-    translated_lines.join("\n")
+    assembled_lines.join("\n")
   end
 
   def write
@@ -40,7 +48,7 @@ class Assembler
     end
 
     def symbol_regex
-      @symbol_regex ||= Regexp.compile(/^[A-Za-z_:\.\$][A-Za-z0-9_:\.\$]*/)
+      @symbol_regex ||= Regexp.compile(/^[A-Za-z_:\.\$][A-Za-z0-9_:\.\$]*$/)
     end
 
     def with_padding(string, size)
@@ -52,10 +60,6 @@ class Assembler
   end
 
   class AInstruction < Line
-    def type
-      :a_instruction
-    end
-
     def inspect
       "<A #{symbol? ? "symbol" : "number"}: #{name}>"
     end
@@ -82,9 +86,7 @@ class Assembler
 
     def address(symbol_table)
       return name.to_i if number?
-      unless symbol_table.includes?(symbol)
-        symbol_table.add(symbol)
-      end
+      symbol_table.add(symbol)
       symbol_table.get_address(symbol)
     end
 
@@ -147,10 +149,6 @@ class Assembler
       "JMP" => 7,
     }
 
-    def type
-      :c_instruction
-    end
-
     def inspect
       [
         "<C",
@@ -187,21 +185,22 @@ class Assembler
       text.match?(regex) && !comp.nil?
     end
 
+    def get_binary_string(lookup, key, size:)
+      raise KeyError.new("invalid key: #{key}") unless lookup.key?(key)
+      with_padding(lookup[key].to_s(2), size)
+    end
+
     def binary_string(symbol_table)
       [
         "111",
-        with_padding(COMP_LOOKUP[comp].to_s(2), 7),
-        with_padding(DEST_LOOKUP[dest].to_s(2), 3),
-        with_padding(JUMP_LOOKUP[jump].to_s(2), 3),
+        get_binary_string(COMP_LOOKUP, comp, size: 7),
+        get_binary_string(DEST_LOOKUP, dest, size: 3),
+        get_binary_string(JUMP_LOOKUP, jump, size: 3),
       ].join
     end
   end
 
   class Label < Line
-    def type
-      :label
-    end
-
     def inspect
       "<Label #{name}>"
     end
@@ -218,35 +217,6 @@ class Assembler
 
     def binary_string(_symbol_table)
       nil
-    end
-  end
-
-  class Parser
-    def self.parse(input)
-      input.split("\n").map do |text|
-        text = text.split("//").first.strip
-        next if text.empty?
-        Line.build(text).tap do |line|
-          raise StandardError.new("#{line.text} is invalid") unless line.valid?
-        end
-      end.compact
-    end
-  end
-
-  class Translator
-    def self.translate(lines, symbol_table)
-      new(lines, symbol_table).translate
-    end
-
-    def initialize(lines, symbol_table)
-      @lines = lines
-      @symbol_table = symbol_table
-    end
-
-    def translate
-      @lines
-        .reject { |line| line.is_a?(Label) }
-        .map { |line| line.binary_string(@symbol_table) }
     end
   end
 
@@ -271,7 +241,7 @@ class Assembler
       (0..15).each do |register|
         @lookup["R#{register}".to_sym] = register
       end
-      @labels = Set.new
+      @label_count = 0
       @address = 16
     end
 
@@ -279,7 +249,6 @@ class Assembler
       unless includes?(key)
         @lookup[key] = @address
         @address += 1
-        @address += 1 while @labels.include?(@address)
       end
       self
     end
@@ -287,7 +256,7 @@ class Assembler
     def add_label(label, value)
       raise StandardError.new("duplicate: #{label.name}") if includes?(label.name)
       @lookup[label.name] = value
-      @labels.add(label.name)
+      @label_count += 1
     end
 
     def includes?(variable)
@@ -304,7 +273,7 @@ class Assembler
     def build
       @lines.each_with_index do |line, index|
         if line.is_a?(Label)
-          add_label(line, index - @labels.size)
+          add_label(line, index - @label_count)
         end
       end
       self
@@ -329,7 +298,7 @@ puts "\nlines:"
 ASSEMBLER
   .lines
   .reject { |line| line.is_a?(Assembler::Label) }
-  .zip(ASSEMBLER.translated_lines)
+  .zip(ASSEMBLER.assembled_lines)
   .each_with_index { |(l, tl), index| puts "#{index}: #{tl} #{l.inspect}" }
 
 puts "\nfinishing:"
