@@ -5,8 +5,12 @@ class Assembler
     @path = path
   end
 
-  def lines
-    @lines ||= File.read(@path).split("\n").map do |text|
+  def raw_lines
+    File.read(@path).split("\n")
+  end
+
+  def parsed_lines
+    @parsed_lines ||= raw_lines.map do |text|
       text = text.split("//").first.strip
       next if text.empty?
       Line.build(text).tap do |line|
@@ -16,13 +20,13 @@ class Assembler
   end
 
   def assembled_lines
-    @assembled_lines ||= lines
+    @assembled_lines ||= parsed_lines
       .reject { |line| line.is_a?(Label) }
-      .map { |line| line.binary_string(@symbol_table) }
+      .map { |line| line.binary_string(symbol_table) }
   end
 
   def symbol_table
-    @symbol_table ||= SymbolTable.build(lines)
+    @symbol_table ||= SymbolTable.build(parsed_lines)
   end
 
   def output
@@ -287,7 +291,7 @@ FILENAME, *_ = ARGV
 PATH = Pathname.new(FILENAME)
 puts "assembling: #{PATH}"
 ASSEMBLER = Assembler.new(PATH)
-puts "parsing... line count: #{ASSEMBLER.lines.size}"
+puts "parsing... line count: #{ASSEMBLER.parsed_lines.size}"
 puts "\nsymbol table:"
 ASSEMBLER.symbol_table.lookup.each do |k, v|
   next if [:SP, :LCL, :ARG, :THIS, :THAT, :SCREEN, :KBD].include?(k)
@@ -296,7 +300,7 @@ ASSEMBLER.symbol_table.lookup.each do |k, v|
 end
 puts "\nlines:"
 ASSEMBLER
-  .lines
+  .parsed_lines
   .reject { |line| line.is_a?(Assembler::Label) }
   .zip(ASSEMBLER.assembled_lines)
   .each_with_index { |(l, tl), index| puts "#{index}: #{tl} #{l.inspect}" }
