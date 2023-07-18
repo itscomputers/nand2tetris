@@ -24,5 +24,8 @@ simulate:
 cpu_emulate:
   ./tools/CPUEmulator.sh
 
+vm_emulate:
+  ./tools/VMEmulator.sh
+
 assembler:
   ./tools/Assembler.sh

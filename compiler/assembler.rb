@@ -1,5 +1,3 @@
-#!/usr/bin/env ruby
-
 class Assembler
   def initialize(path)
     @path = path
@@ -284,27 +282,4 @@ class Assembler
     end
   end
 end
-
-require "pathname"
-
-FILENAME, *_ = ARGV
-PATH = Pathname.new(FILENAME)
-puts "assembling: #{PATH}"
-ASSEMBLER = Assembler.new(PATH)
-puts "parsing... line count: #{ASSEMBLER.parsed_lines.size}"
-puts "\nsymbol table:"
-ASSEMBLER.symbol_table.lookup.each do |k, v|
-  next if [:SP, :LCL, :ARG, :THIS, :THAT, :SCREEN, :KBD].include?(k)
-  next if k.match?(/R\d+/)
-  puts "  #{k}: #{v}"
-end
-puts "\nlines:"
-ASSEMBLER
-  .parsed_lines
-  .reject { |line| line.is_a?(Assembler::Label) }
-  .zip(ASSEMBLER.assembled_lines)
-  .each_with_index { |(l, tl), index| puts "#{index}: #{tl} #{l.inspect}" }
-
-puts "\nfinishing:"
-ASSEMBLER.write
 
