@@ -3,344 +3,420 @@ class VmTranslator
     @path = path
   end
 
-  def raw_lines
-    File.read(@path).split("\n")
+  def program_module
+    @program_module ||= ProgramModule.new(@path)
   end
 
-  def parsed_lines
-    @parsed_lines ||= raw_lines.map do |text|
-      text = text.split("//").first.strip.gsub(/\ +/, " ")
-      next if text.empty?
-      Line.build(text)
-    end.compact
+  def writer
+    @writer ||= ProgramWriter.new(@path.sub("vm", "asm"))
   end
 
-  def output
-    @output ||= parsed_lines.map(&:asm).join("\n")
+  def append_commands!
+    program_module.lines.each do |line|
+      line.commands.each do |command|
+        writer << command
+      end
+      writer.local += 1 if line.use_local?
+    end
+    self
   end
 
-  def write
-    @path
-      .sub("vm", "asm")
-      .tap { |path| puts "writing to #{path}" }
-      .write(output)
+  def write!
+    writer.write!
+  end
+
+  class ProgramWriter
+    attr_reader :path, :commands
+    attr_accessor :local
+
+    def initialize(path)
+      @path = path
+      @local = 0
+      @global = 0
+      @commands = []
+    end
+
+    def <<(command)
+      @commands << sanitize(command)
+    end
+
+    def write!
+      @path.write(@commands.join("\n"))
+    end
+
+    private
+
+    def namespace
+      @namespace ||= @path.basename(".*").to_s
+    end
+
+    def sanitize(command)
+      command.gsub(/\$namespace/, namespace).gsub(/\$local/, local.to_s)
+    end
+  end
+
+  class ProgramModule
+    attr_reader :lines
+
+    def initialize(path)
+      @path = path
+      @lines = []
+      build_lines
+    end
+
+    def build_lines
+      @path.each_line do |text|
+        text = text.split("//").first.strip.gsub(/\ +/, " ")
+        next if text.empty?
+        @lines << Line.build(text)
+      end
+    end
   end
 
   class Line < Struct.new(:text)
     def self.build(text)
       subclass = subclasses.find do |subclass|
-        subclass != Invalid && subclass::REGEX.match?(text)
+        subclass != Invalid && subclass.compiled_regex.match?(text)
       end
       (subclass || Invalid).new(text)
     end
 
+    def self.regex(value)
+      @regex = value
+    end
+
+    def self.compiled_regex
+      @compiled_regex ||= Regexp.compile(@regex)
+    end
+
+    def self.register(value)
+      @register = value
+    end
+
+    def register
+      self.class.instance_variable_get(:@register)
+    end
+
+    def self.operation(value)
+      @operation = value
+    end
+
+    def operation
+      self.class.instance_variable_get(:@operation)
+    end
+
     def method_missing(name, *args)
-      self.class::REGEX.match(text)[name]
+      self.class.compiled_regex.match(text)[name]
     rescue IndexError
       raise NoMethodError
     end
 
-    def asm
-      commands.join("\n")
+    def use_local?
+      false
+    end
+
+    def commands
+      [
+        *setup,
+        *finally,
+      ]
+    end
+
+    def at(register, &block)
+      ["@#{register}", *block.call]
     end
 
     def stack_value
-      "@SP\nA=M"
+      at("SP") { %w(A=M) }
     end
 
     def stack_inc
-      "@SP\nM=M+1"
+      at("SP") { %w(M=M+1) }
     end
 
     def stack_dec
-      "@SP\nM=M-1"
+      at("SP") { %w(M=M-1) }
     end
 
     def push(value)
-      "#{stack_value}\nM=#{value}\n#{stack_inc}"
+      [
+        *stack_value,
+        "M=#{value}",
+        *stack_inc,
+      ]
     end
 
     def pop(&block)
-      "#{stack_dec}\n#{stack_value}\n#{block.call.join("\n")}"
+      [
+        *stack_dec,
+        *stack_value,
+        *block.call,
+      ]
     end
 
     def set(value, to:)
-      "@#{value}\n#{to}=A"
+      at(value) { "#{to}=A" }
     end
 
     def store(value, to:)
-      "@#{to}\nM=#{value}"
-    end
-
-    def retrieve(register, &block)
-      "@#{register}\n#{block.call.join("\n")}"
+      at(value) { "M=#{value}" }
     end
   end
 
   class Invalid < Line
-    REGEX = Regexp.compile(/.*/)
+    REGEX = /.*/
 
-    def asm
+    def commands
       raise StandardError.new("invalid line: #{text}")
     end
   end
 
   module PushMixin
-    def prefix
-      set(constant, to: "D")
+    def setup
+      [
+        *set(constant, to: "D"),
+        *at(register) { %w(A=D+M D=M) },
+      ]
     end
 
-    def core
-      nil
+    def finally
+      push("D")
+    end
+  end
+
+  module PopMixin
+    def register
+      self.class.instance_variable_get(:@register)
     end
 
-    def commands
-      [prefix, core, push("D")].compact
+    def setup
+      [
+        *set(constant, to: "D"),
+        *at(register) { %w(D=D+M) },
+      ]
+    end
+
+    def finally
+      [
+        *store("D", to: "R13"),
+        *pop { %w(D=M) },
+        *at("R13") { %w(A=M M=D) },
+      ]
+    end
+  end
+
+  module UnaryOperationMixin
+    def setup
+      pop { operation }
+    end
+
+    def finally
+      stack_inc
+    end
+  end
+
+  module BinaryOperationMixin
+    def setup
+      [
+        *pop { %w(D=M) },
+        *pop { operation },
+      ]
+    end
+
+    def finally
+      stack_inc
+    end
+  end
+
+  module ComparisonMixin
+    def setup
+      [
+        *pop { %w(D=M) },
+        *pop { %w(D=D-M) },
+        *at("BRANCH.$namespace.$local") { operation },
+        "D=0",
+        *at("ENDBRANCH.$namespace.$local") { %w(0;JMP) },
+        "(BRANCH.$namespace.$local)",
+        "D=1",
+        "(ENDBRANCH.$namespace.$local)",
+      ]
+    end
+
+    def use_local?
+      true
+    end
+
+    def finally
+      [
+        *push("D"),
+        *stack_inc
+      ]
     end
   end
 
   class PushConstant < Line
     include PushMixin
-    REGEX = Regexp.compile(/^push constant (?<constant>\d+)$/)
+    regex /^push constant (?<constant>\d+)$/
+
+    def setup
+      set(constant, to: "D")
+    end
   end
 
   class PushLocal < Line
     include PushMixin
-    REGEX = Regexp.compile(/^push local (?<constant>\d+)$/)
+    regex /^push local (?<constant>\d+)$/
+    register "LCL"
+  end
 
-    def core
-      retrieve("LCL") { %w(A=D+M D=M) },
+  class PushArgument < Line
+    include PushMixin
+    regex /^push argument (?<constant>\d+)$/
+    register "ARG"
+  end
+
+  class PushThis < Line
+    include PushMixin
+    regex /^push this (?<constant>\d+)$/
+    register "THIS"
+  end
+
+  class PushThat < Line
+    include PushMixin
+    regex /^push that (?<constant>\d+)$/
+    register "THAT"
+  end
+
+  class PushStatic < Line
+    include PushMixin
+    regex /^push static (?<constant>\d+)$/
+
+    def setup
+      at("$namespace.#{constant}") { %w(D=M) }
+    end
+  end
+
+  class PushTemp < Line
+    include PushMixin
+    regex /^push temp (?<constant>\d+)$/
+
+    def setup
+      at(5 + constant) { %w(D=M) }
+    end
+  end
+
+  class PushPointer  < Line
+    include PushMixin
+    regex /^push pointer (?<constant>\d+)$/
+
+    def setup
+      at(3 + constant) { %w(D=M) }
     end
   end
 
   class PopLocal < Line
-    REGEX = Regexp.compile(/^pop local (?<offset>\d+)$/)
+    include PopMixin
+    regex /^pop local (?<constant>\d+)$/
+    register "LCL"
+  end
 
-    def commands
-      [
-        set(offset, to: "D"),
-        retrieve("LCL") { %w(D=D+M) },
-        store("D", to: "R13"),
-        pop { "D=M" },
-        retrieve("R13") { %w(A=M M=D) },
-      ]
+  class PopArgument < Line
+    include PopMixin
+    regex /^pop argument (?<constant>\d+)$/
+    register "ARG"
+  end
+
+  class PopThis < Line
+    include PopMixin
+    regex /^pop this (?<constant>\d+)$/
+    register "THIS"
+  end
+
+  class PopThat < Line
+    include PopMixin
+    regex /^pop that (?<constant>\d+)$/
+    register "THAT"
+  end
+
+  class PopStatic < Line
+    include PopMixin
+    regex /^pop static (?<constant>\d+)$/
+
+    def setup
+      at("$namespace.#{constant}") { %w(D=M) }
+    end
+  end
+
+  class PopTemp < Line
+    include PopMixin
+    regex /^pop temp (?<constant>\d+)$/
+
+    def setup
+      at(5 + constant) { %w(D=D+A) }
+    end
+  end
+
+  class PopPointer < Line
+    include PopMixin
+    regex /^pop pointer (?<constant>\d+)$/
+
+    def setup
+      at(3 + constant) { %w(D=D+A) }
     end
   end
 
   class Neg < Line
-    REGEX = Regexp.compile(/^neg$/)
+    include UnaryOperationMixin
+    regex /^neg$/
+    operation %w(M=-M)
+  end
 
-    def commands
-      [
-        pop { "M=-M" },
-        stack_inc,
-      ]
-    end
+  class Not < Line
+    include UnaryOperationMixin
+    regex /^not$/
+    operation %w(M=!M)
   end
 
   class Add < Line
-    REGEX = Regexp.compile(/^add$/)
-
-    def commands
-      [
-        pop { %w(D=M) },
-        pop { %w(M=D+M) },
-        stack_inc,
-      ]
-    end
+    include BinaryOperationMixin
+    regex /^add$/
+    operation %w(M=D+M)
   end
 
   class Sub < Line
-    REGEX = Regexp.compile(/^sub$/)
+    include BinaryOperationMixin
+    regex /^sub$/
+    operation %w(M=D-M)
+  end
 
-    def commands
-      [
-        pop { %w(D=M) },
-        pop { %w(M=D-M) },
-        stack_inc,
-      ]
-    end
+  class And < Line
+    include BinaryOperationMixin
+    regex /^and$/
+    operation %w(M=D&M)
+  end
+
+  class Or < Line
+    include BinaryOperationMixin
+    regex /^or$/
+    operation %w(M=D|M)
   end
 
   class Eq < Line
-    REGEX = Regexp.compile(/^eq$/)
-
-    def commands
-    end
+    include ComparisonMixin
+    regex /^eq$/
+    operation %w(D;JEQ)
   end
 
   class Gt < Line
-    REGEX = Regexp.compile(/^gt$/)
-
-    def commands
-    end
+    include ComparisonMixin
+    regex /^gt$/
+    operation %w(D;JLT)
   end
 
   class Lt < Line
-    REGEX = Regexp.compile(/^lt$/)
-
-    def commands
-    end
+    include ComparisonMixin
+    regex /^lt$/
+    operation %w(D;JGT)
   end
 end
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# zero?
-# x ~> 0  if x == 0
-#   ~> -1 if x != 0
-#
-# f(0) = 0
-# f(x) = -1 for x != 0
-#
-# and(A, B)
-#   (A & B)
-#
-# or(A, B)
-#   (A | B)
-#
-# not(A)
-#   !A
-#
-# xor(A, B)
-#   and(
-#     or(A, B),
-#     not(
-#       and(A, B)
-#     )
-#   )
-#
-# and(A, 0)
-#   0
-#
-# or(A, 0)
-#   A
-#
-# not(0)
-#   -1
-#
-# and(A, -1)
-#   A
-#
-# or(A, -1)
-#   -1
-#
-# not(-1)
-#   0
-#
-# xor(A, 0)
-#   and(or(A, 0), not(and(A, 0)))
-#   and(A, not(0))
-#   and(A, -1)
-#   A
-#
-#---------------------------------------------------------
-#
-# xor(A, -1)
-#   and(or(A, -1), not(and(A, -1)))
-#   and(-1, not(A))
-#   and(-1, !A)
-#   !A
-#   -A - 1
-#
-#---------------------------------------------------------
-#
-# and(A, 32767)       # 32767 == 0111111111111111
-#   A < 0 ? 32768 + A : A
-#
-# or(A, 32767)
-#   A < 0 ? -1 : 32767
-#
-# xor(A, 32767)
-#   and(or(A, 32767), not(and(A, 32767)))
-#   A < 0 ?
-#     and(-1, not(32767 + A)) == -(32768 + A) - 1
-#     and(32767, not(A)) == and(32767, -A - 1) == 32768 - A - 1
-#   A < 0 ?
-#     -32769 - A
-#     32767 - A
-#
-#---------------------------------------------------------
-#
-# and(A, -32768)      # -32768 == 1000000000000000
-#   A < 0 ? -32768 : -32768 + A
-#
-# or(A, -32768)
-#   A < 0 ? A : -A
-#
-# xor(A, -32768)
-#   and(or(A, -32768, not(and(A, -32768))))
-#   A < 0 ?
-#     and(A, not(-32768)) == and(A, 32767)
-#     and(-32678 + A, not(0)) == and(-32768 + A, -1)
-#   A < 0 ?
-#     32768 + A
-#     -32768 + A
-#
-#---------------------------------------------------------
-#
-# xor(-1, 32767)
-#   -32767 - 1
-#   -32768
-#
-# xor(-1, -32768)
-#   32768 - 1
-#   32767
-#
-#---------------------------------------------------------
-#
-# and(A, !A)
-#   0
-#
-# or(A, !A)
-#   -1
-#
-# xor(A, !A)
-#   and(or(A, !A), not(and(A, !A)))
-#   and(-1, not(0))
-#   and(-1, -1)
-#   -1
-#
-# A + !A
-#   A + (-A - 1)
-#   -1
-#
-#---------------------------------------------------------
-# xor(A, 32767) + xor(A, -32768)
-#   A < 0 ?
-#     -32769 - A + 32768 + A == -1
-#     32767 - A + -32768 + A == -1
-#   -1
-#
