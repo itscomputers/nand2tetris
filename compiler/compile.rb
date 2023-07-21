@@ -8,6 +8,46 @@ require_relative "vm_translator"
 
 require 'optparse'
 
+def validate_presence!(assembly:, vm:)
+  unless assembly.nil? ^ vm.nil?
+    raise StandardError.new("supply either `assembly` or `vm`")
+  end
+end
+
+def process_assembly(path, dry_run:)
+  raise StandardError.new("#{path} invalid path") unless path.file?
+  assembler = Assembler.new(path)
+  if dry_run
+    puts "would write"
+    assembler.symbol_table.lookup.each do |k, v|
+      next if [:SP, :LCL, :ARG, :THIS, :THAT, :SCREEN, :KBD].include?(k)
+      next if k.match?(/^R\d+$/)
+      puts "#{k}: #{v}"
+    end
+    assembler
+      .parsed_lines
+      .reject { |line| line.is_a?(Assembler::Label) }
+      .zip(assembler.assembled_lines)
+      .each_with_index { |(l, al), index| puts "#{index}: #{al} #{l.inspect}" }
+  else
+    assembler.write
+  end
+end
+
+def process_vm(path, dry_run:)
+  raise StandardError.new("#{path} invalid path") unless path.file? || path.directory?
+  writer = VmTranslator.new(path).writer
+  writer.append_commands
+  if dry_run
+    puts "would write"
+    writer.commands.each(&method(:puts))
+    puts "to #{writer.path}"
+  else
+    puts "writing to #{writer.path}"
+    writer.write
+  end
+end
+
 option_parser = OptionParser.new do |opts|
   opts.on "-a", "--assembly=ASSEMBLY", "assembly file"
   opts.on "-v", "--vm=VM", "vm file or directory"
@@ -21,42 +61,13 @@ assembly = options[:assembly]
 vm = options[:vm]
 dry_run = options[:dry_run] || false
 
-unless assembly.nil? ^ vm.nil?
-  raise StandardError.new("supply either `assembly` or `vm`")
+validate_presence!(assembly: assembly, vm: vm)
+
+unless assembly.nil?
+  process_assembly(Pathname.new(assembly), dry_run: dry_run)
 end
 
 unless vm.nil?
-  path = Pathname.new(vm)
-  raise StandardError.new("#{path} invalid path") unless path.file? || path.directory?
-  vm_translator = VmTranslator.new(path).append_commands
-  if dry_run
-    puts "would write"
-    vm_translator.writer.commands.each(&method(:puts))
-    puts "to #{vm_translator.writer.path}"
-  else
-    puts "writing to #{vm_translator.writer.path}"
-    vm_translator.write
-  end
+  process_vm(Pathname.new(vm), dry_run: dry_run)
 end
-
-
-# FILENAME, *_ = ARGV
-# PATH = Pathname.new(FILENAME)
-# TRANSLATOR = VmTranslator.new(PATH)
-# TRANSLATOR.parsed_lines.each_with_index { |line, index| puts "#{index}: #{line}" }
-# puts "\nassembly:\n#{TRANSLATOR.output}"
-# TRANSLATOR.write
-#
-# ASSEMBLER = Assembler.new(PATH)
-# ASSEMBLER.symbol_table.lookup.each do |k, v|
-#   next if [:SP, :LCL, :ARG, :THIS, :THAT, :SCREEN, :KBD].include?(k)
-#   next if k.match(/^R\d+$/)
-#   puts "#{k}: #{v}"
-# end
-# ASSEMBLER
-#   .parsed_lines
-#   .reject { |line| line.is_a?(Assembler::Label) }
-#   .zip(ASSEMBLER.assembled_lines)
-#   .each_with_index { |(l, al), index| puts "#{index}: #{tl} #{l.inspect}" }
-# ASSEMBLER.write
 

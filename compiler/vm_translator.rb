@@ -4,30 +4,19 @@ class VmTranslator
   end
 
   def program_modules
-    @program_modules ||= [ProgramModule.new(@path)]
+    [ProgramModule.new(@path)]
   end
 
   def writer
-    @writer ||= ProgramWriter.new(@path.sub("vm", "asm"))
-  end
-
-  def append_commands
-    program_modules.each do |program_module|
-      writer.append_commands(program_module)
-    end
-    self
-  end
-
-  def write
-    writer.write
-    self
+    @writer ||= ProgramWriter.new(@path.sub("vm", "asm"), program_modules)
   end
 
   class ProgramWriter
     attr_reader :path, :commands
 
-    def initialize(path)
+    def initialize(path, program_modules)
       @path = path
+      @program_modules = program_modules
       @local = 0
       @commands = []
     end
@@ -36,14 +25,16 @@ class VmTranslator
       @path.write(@commands.join("\n"))
     end
 
-    def append_commands(program_module)
-      program_module.lines.each do |line|
-        line.commands.each do |command|
-          @commands << sanitize(command, program_module.namespace)
+    def append_commands
+      @program_modules.each do |program_module|
+        program_module.lines.each do |line|
+          line.commands.each do |command|
+            @commands << sanitize(command, program_module.namespace)
+          end
+          @local += 1 if line.use_local?
         end
-        @local += 1 if line.use_local?
+        @local = 0
       end
-      @local = 0
       self
     end
 
