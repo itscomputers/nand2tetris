@@ -3,55 +3,54 @@ class VmTranslator
     @path = path
   end
 
-  def program_module
-    @program_module ||= ProgramModule.new(@path)
+  def program_modules
+    @program_modules ||= [ProgramModule.new(@path)]
   end
 
   def writer
     @writer ||= ProgramWriter.new(@path.sub("vm", "asm"))
   end
 
-  def append_commands!
-    program_module.lines.each do |line|
-      line.commands.each do |command|
-        writer << command
-      end
-      writer.local += 1 if line.use_local?
+  def append_commands
+    program_modules.each do |program_module|
+      writer.append_commands(program_module)
     end
     self
   end
 
-  def write!
-    writer.write!
+  def write
+    writer.write
+    self
   end
 
   class ProgramWriter
     attr_reader :path, :commands
-    attr_accessor :local
 
     def initialize(path)
       @path = path
       @local = 0
-      @global = 0
       @commands = []
     end
 
-    def <<(command)
-      @commands << sanitize(command)
+    def write
+      @path.write(@commands.join("\n"))
     end
 
-    def write!
-      @path.write(@commands.join("\n"))
+    def append_commands(program_module)
+      program_module.lines.each do |line|
+        line.commands.each do |command|
+          @commands << sanitize(command, program_module.namespace)
+        end
+        @local += 1 if line.use_local?
+      end
+      @local = 0
+      self
     end
 
     private
 
-    def namespace
-      @namespace ||= @path.basename(".*").to_s
-    end
-
-    def sanitize(command)
-      command.gsub(/\$namespace/, namespace).gsub(/\$local/, local.to_s)
+    def sanitize(command, namespace)
+      command.gsub(/\$namespace/, namespace).gsub(/\$local/, @local.to_s)
     end
   end
 
@@ -62,6 +61,10 @@ class VmTranslator
       @path = path
       @lines = []
       build_lines
+    end
+
+    def namespace
+      @namespace ||= @path.basename(".*").to_s
     end
 
     def build_lines
@@ -93,173 +96,146 @@ class VmTranslator
       @register = value
     end
 
-    def register
-      self.class.instance_variable_get(:@register)
-    end
-
     def self.operation(value)
       @operation = value
+    end
+
+    attr_reader :commands
+
+    def initialize(text)
+      @text = text
+      @commands = []
+      build_commands
+    end
+
+    def add_command(command)
+      @commands += Array(command)
+    end
+
+    def build_commands
     end
 
     def operation
       self.class.instance_variable_get(:@operation)
     end
 
-    def method_missing(name, *args)
-      self.class.compiled_regex.match(text)[name]
+    def register
+      self.class.instance_variable_get(:@register)
+    end
+
+    def method_missing(name, *args, **kwargs)
+      self.class.compiled_regex.match(@text)[name]
     rescue IndexError
-      raise NoMethodError
+      super(name, *args, **kwargs)
     end
 
     def use_local?
       false
     end
 
-    def commands
-      [
-        *setup,
-        *finally,
-      ]
-    end
-
     def at(register, &block)
-      ["@#{register}", *block.call]
+      add_command("@#{register}")
+      add_command(block.call) unless block.nil?
     end
 
-    def stack_value
-      at("SP") { %w(A=M) }
-    end
-
-    def stack_inc
-      at("SP") { %w(M=M+1) }
-    end
-
-    def stack_dec
-      at("SP") { %w(M=M-1) }
-    end
-
-    def push(value)
-      [
-        *stack_value,
-        "M=#{value}",
-        *stack_inc,
-      ]
+    def push
+      at("SP") { %w(A=M M=D) }
+      at("SP") { "M=M+1" }
     end
 
     def pop(&block)
-      [
-        *stack_dec,
-        *stack_value,
-        *block.call,
-      ]
-    end
-
-    def set(value, to:)
-      at(value) { "#{to}=A" }
-    end
-
-    def store(value, to:)
-      at(value) { "M=#{value}" }
+      at("SP") { %w(M=M-1 A=M) }
+      add_command(block.call) unless block.nil?
     end
   end
 
   class Invalid < Line
     REGEX = /.*/
 
-    def commands
-      raise StandardError.new("invalid line: #{text}")
+    def build_commands
+      raise StandardError.new("invalid line: #{@text}")
     end
   end
 
   module PushMixin
-    def setup
-      [
-        *set(constant, to: "D"),
-        *at(register) { %w(A=D+M D=M) },
-      ]
+    def build_commands
+      at(constant) { "D=A" }
+      at(register) { %w(A=D+M D=M) }
+      push
     end
+  end
 
-    def finally
-      push("D")
+  module PushDirectMixin
+    def build_commands
+      at(register) { "D=M" }
+      push
     end
   end
 
   module PopMixin
-    def register
-      self.class.instance_variable_get(:@register)
+    def build_commands
+      at(constant) { "D=A" }
+      at(register) { "D=D+M" }
+      at("R13") { "M=D" }
+      pop { "D=M" }
+      at("R13") { %w(A=M M=D) }
     end
+  end
 
-    def setup
-      [
-        *set(constant, to: "D"),
-        *at(register) { %w(D=D+M) },
-      ]
-    end
-
-    def finally
-      [
-        *store("D", to: "R13"),
-        *pop { %w(D=M) },
-        *at("R13") { %w(A=M M=D) },
-      ]
+  module PopDirectMixin
+    def build_commands
+      pop { "D=M" }
+      at(register) { "M=D" }
     end
   end
 
   module UnaryOperationMixin
-    def setup
+    def build_commands
       pop { operation }
-    end
-
-    def finally
-      stack_inc
+      at("SP") { "M=M+1" }
     end
   end
 
   module BinaryOperationMixin
-    def setup
-      [
-        *pop { %w(D=M) },
-        *pop { operation },
-      ]
-    end
-
-    def finally
-      stack_inc
+    def build_commands
+      pop { "D=M" }
+      pop { operation }
+      at("SP") { "M=M+1" }
     end
   end
 
   module ComparisonMixin
-    def setup
-      [
-        *pop { %w(D=M) },
-        *pop { %w(D=D-M) },
-        *at("BRANCH.$namespace.$local") { operation },
-        "D=0",
-        *at("ENDBRANCH.$namespace.$local") { %w(0;JMP) },
-        "(BRANCH.$namespace.$local)",
-        "D=1",
-        "(ENDBRANCH.$namespace.$local)",
-      ]
+    def build_commands
+      pop { "D=M" }
+      pop { "D=D-M" }
+      at(branch) { operation }
+      add_command("D=0")
+      at(end_branch) { "0;JMP" }
+      add_command("(#{branch})")
+      add_command("D=-1")
+      add_command("(#{end_branch})")
+      push
     end
 
     def use_local?
       true
     end
 
-    def finally
-      [
-        *push("D"),
-        *stack_inc
-      ]
+    def branch
+      "BRANCH.$namespace.$local"
+    end
+
+    def end_branch
+      "END#{branch}"
     end
   end
 
   class PushConstant < Line
-    include PushMixin
     regex /^push constant (?<constant>\d+)$/
 
-    def setup
-      set(constant, to: "D")
+    def build_commands
+      at(constant) { "D=A" }
+      push
     end
   end
 
@@ -287,30 +263,30 @@ class VmTranslator
     register "THAT"
   end
 
-  class PushStatic < Line
-    include PushMixin
-    regex /^push static (?<constant>\d+)$/
-
-    def setup
-      at("$namespace.#{constant}") { %w(D=M) }
-    end
-  end
-
   class PushTemp < Line
-    include PushMixin
+    include PushDirectMixin
     regex /^push temp (?<constant>\d+)$/
 
-    def setup
-      at(5 + constant) { %w(D=M) }
+    def register
+      5 + constant.to_i
     end
   end
 
   class PushPointer  < Line
-    include PushMixin
+    include PushDirectMixin
     regex /^push pointer (?<constant>\d+)$/
 
-    def setup
-      at(3 + constant) { %w(D=M) }
+    def register
+      3 + constant.to_i
+    end
+  end
+
+  class PushStatic < Line
+    include PushDirectMixin
+    regex /^push static (?<constant>\d+)$/
+
+    def register
+      "$namespace.#{constant}"
     end
   end
 
@@ -338,30 +314,30 @@ class VmTranslator
     register "THAT"
   end
 
-  class PopStatic < Line
-    include PopMixin
-    regex /^pop static (?<constant>\d+)$/
-
-    def setup
-      at("$namespace.#{constant}") { %w(D=M) }
-    end
-  end
-
   class PopTemp < Line
-    include PopMixin
+    include PopDirectMixin
     regex /^pop temp (?<constant>\d+)$/
 
-    def setup
-      at(5 + constant) { %w(D=D+A) }
+    def register
+      5 + constant.to_i
     end
   end
 
   class PopPointer < Line
-    include PopMixin
+    include PopDirectMixin
     regex /^pop pointer (?<constant>\d+)$/
 
-    def setup
-      at(3 + constant) { %w(D=D+A) }
+    def register
+      3 + constant.to_i
+    end
+  end
+
+  class PopStatic < Line
+    include PopDirectMixin
+    regex /^pop static (?<constant>\d+)$/
+
+    def register
+      "$namespace.#{constant}"
     end
   end
 
@@ -386,7 +362,7 @@ class VmTranslator
   class Sub < Line
     include BinaryOperationMixin
     regex /^sub$/
-    operation %w(M=D-M)
+    operation %w(D=-D M=D+M)
   end
 
   class And < Line

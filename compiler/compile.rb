@@ -28,14 +28,14 @@ end
 unless vm.nil?
   path = Pathname.new(vm)
   raise StandardError.new("#{path} invalid path") unless path.file? || path.directory?
-  vm_translator = VmTranslator.new(path).append_commands!
+  vm_translator = VmTranslator.new(path).append_commands
   if dry_run
     puts "would write"
     vm_translator.writer.commands.each(&method(:puts))
     puts "to #{vm_translator.writer.path}"
   else
     puts "writing to #{vm_translator.writer.path}"
-    vm_translator.write!
+    vm_translator.write
   end
 end
 
