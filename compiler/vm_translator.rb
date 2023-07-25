@@ -353,7 +353,7 @@ class VmTranslator
   class Sub < Line
     include BinaryOperationMixin
     regex /^sub$/
-    operation %w(D=-D M=D+M)
+    operation %w(D=-D M=D+M)  # M=M-D
   end
 
   class And < Line
@@ -386,4 +386,3 @@ class VmTranslator
     operation %w(D;JGT)
   end
 end
-
