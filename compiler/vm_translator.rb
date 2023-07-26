@@ -68,6 +68,8 @@ class VmTranslator
   end
 
   class Line < Struct.new(:text)
+    LABEL_REGEX = "(?<label>[a-zA-Z_:\.][a-zA-Z0-9_:\.]*)"
+
     def self.build(text)
       subclass = subclasses.find do |subclass|
         subclass != Invalid && subclass.compiled_regex.match?(text)
@@ -101,6 +103,10 @@ class VmTranslator
 
     def add_command(command)
       @commands += Array(command)
+    end
+
+    def add_label(label)
+      add_command("(#{label})")
     end
 
     def build_commands
@@ -202,9 +208,9 @@ class VmTranslator
       at(branch) { operation }
       add_command("D=0")
       at(end_branch) { "0;JMP" }
-      add_command("(#{branch})")
+      add_label(branch)
       add_command("D=-1")
-      add_command("(#{end_branch})")
+      add_label(end_branch)
       push
     end
 
@@ -384,6 +390,31 @@ class VmTranslator
     include ComparisonMixin
     regex /^lt$/
     operation %w(D;JGT)
+  end
+
+  class Label < Line
+    regex /^label #{Line::LABEL_REGEX}$/
+
+    def build_commands
+      add_label(label)
+    end
+  end
+
+  class Goto < Line
+    regex /^goto #{Line::LABEL_REGEX}$/
+
+    def build_commands
+      at(label) { "0;JMP" }
+    end
+  end
+
+  class IfGoto < Line
+    regex /^if-goto #{Line::LABEL_REGEX}$/
+
+    def build_commands
+      pop { "D=M" }
+      at(label) { "D;JNE" }
+    end
   end
 end
 
