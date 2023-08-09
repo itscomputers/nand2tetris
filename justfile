@@ -1,10 +1,11 @@
-vm_translator_tests := "07/StackArithmetic/SimpleAdd/SimpleAdd \
+vm_translator_files := "07/StackArithmetic/SimpleAdd/SimpleAdd \
   07/StackArithmetic/StackTest/StackTest \
   07/MemoryAccess/BasicTest/BasicTest \
   07/MemoryAccess/PointerTest/PointerTest \
   07/MemoryAccess/StaticTest/StaticTest \
   08/ProgramFlow/BasicLoop/BasicLoop \
-  08/ProgramFlow/FibonacciSeries/FibonacciSeries"
+  08/ProgramFlow/FibonacciSeries/FibonacciSeries \
+  08/FunctionCalls/SimpleFunction/SimpleFunction"
 
 list project:
   find ./projects/{{project}} \
@@ -26,8 +27,13 @@ test_all project tool="HardwareSimulator":
   echo "testing projects/{{test}}.tst"
   ./tools/CPUEmulator.sh projects/{{test}}.tst
 
+@test_vm_translator_dir dir name:
+  ruby compiler/compile.rb -v projects/{{dir}}
+  echo "testing projects/{{dir}}/{{dir}}.tst"
+  ./tools/CPUEmulator.sh projects/{{dir}}/{{name}}.tst
+
 @test_vm_translator_all:
-  for test in {{vm_translator_tests}}; do \
+  for test in {{vm_translator_files}}; do \
     just test_vm_translator "$test"; \
   done
 

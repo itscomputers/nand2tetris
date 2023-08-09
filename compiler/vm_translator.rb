@@ -3,12 +3,26 @@ class VmTranslator
     @path = path
   end
 
+  def vm_paths
+    return @path.children.select { |child| child.extname == ".vm" } if dir?
+    raise StandardError.new("must have .vm extension") if @path.extname != ".vm"
+    [@path]
+  end
+
   def program_modules
-    [ProgramModule.new(@path)]
+    vm_paths.map { |path| ProgramModule.new(path) }
   end
 
   def writer
-    @writer ||= ProgramWriter.new(@path.sub("vm", "asm"), program_modules)
+    @writer ||= ProgramWriter.new(write_path, program_modules)
+  end
+
+  def dir?
+    @path.directory?
+  end
+
+  def write_path
+    (dir? ? @path.join(@path.basename) : @path).sub_ext(".asm")
   end
 
   class ProgramWriter
@@ -41,7 +55,17 @@ class VmTranslator
     private
 
     def sanitize(command, namespace)
-      command.gsub(/\$namespace/, namespace).gsub(/\$local/, @local.to_s)
+      replace(
+        command,
+        namespace: namespace,
+        local: @local,
+      )
+    end
+
+    def replace(command, **lookup)
+      lookup.reduce(command) do |acc, (key, value)|
+        acc.gsub(/\<#{key}\>/, value.to_s)
+      end
     end
   end
 
@@ -69,6 +93,7 @@ class VmTranslator
 
   class Line < Struct.new(:text)
     LABEL_REGEX = "(?<label>[a-zA-Z_:\.][a-zA-Z0-9_:\.]*)"
+    FUNCTION_REGEX = "(?<function>.*)"
 
     def self.build(text)
       subclass = subclasses.find do |subclass|
@@ -219,11 +244,11 @@ class VmTranslator
     end
 
     def branch
-      "BRANCH.$namespace.$local"
+      "<namespace>$if_not.<local>"
     end
 
     def end_branch
-      "END#{branch}"
+      "<namespace>$end_if_not.<local>"
     end
   end
 
@@ -283,7 +308,7 @@ class VmTranslator
     regex /^push static (?<constant>\d+)$/
 
     def register
-      "$namespace.#{constant}"
+      "<namespace>.#{constant}"
     end
   end
 
@@ -334,7 +359,7 @@ class VmTranslator
     regex /^pop static (?<constant>\d+)$/
 
     def register
-      "$namespace.#{constant}"
+      "<namespace>.#{constant}"
     end
   end
 
@@ -414,6 +439,76 @@ class VmTranslator
     def build_commands
       pop { "D=M" }
       at(label) { "D;JNE" }
+    end
+  end
+
+  class Call < Line
+    regex /^call #{Line::FUNCTION_REGEX} (?<n_args>\d+)$/
+
+    def build_commands
+      at(return_label) { "D=A" }
+      push
+
+      ["LCL", "ARG", "THIS", "THAT"].each(&method(:save))
+
+      at("SP") { "D=M" }
+      at(5 + n_args.to_i) { "D=D-A" }
+      at("ARG") { "M=D" }
+
+      at("SP") { "D=M" }
+      at("LCL") { "M=D" }
+
+      at(function) { "0;JMP" }
+
+      add_label(return_label)
+    end
+
+    def return_label
+      "#{function}$ret.<local>"
+    end
+
+    def save(register)
+      at(register) { "D=M" }
+      push
+    end
+  end
+
+  class Function < Line
+    regex /^function #{Line::FUNCTION_REGEX} (?<n_vars>\d+)$/
+
+    def build_commands
+      add_label(function)
+      n_vars.to_i.times do
+        at("0") { "D=A" }
+        push
+      end
+    end
+  end
+
+  class Return < Line
+    regex /^return/
+
+    def build_commands
+      at("LCL") { "D=M" }
+      at("R13") { "M=D" }  # LCL
+
+      at("5") { "D=D-A" }
+      at("R14") { "M=D" }  # ret add
+
+      pop { "D=M" }
+      at("ARG") { %w(A=M M=D) }
+
+      at("ARG") { "D=M" }
+      at("SP") { "M=D+1" }
+
+      ["THAT", "THIS", "ARG", "LCL"].each(&method(:restore))
+
+      at("R14") { %w(A=M 0;JMP) }
+    end
+
+    def restore(register)
+      at("R13") { %w(M=M-1 A=M D=M) }
+      at(register) { "M=D" }
     end
   end
 end
